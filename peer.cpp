@@ -62,7 +62,7 @@ void send_update(peer_data_t &data)
     std::cout << "Sending update\n";
 
     for (auto &[key, value] : data.file_segments) {
-        tracker_msg_t buf = {.segment_index = 0};
+        tracker_msg_t buf = {.segment_index = FILENAME_SEGMENT};
         strcpy(buf.msg, key.c_str());
 
         // Send filename
@@ -85,11 +85,19 @@ void request_peers(peer_data_t &data)
 {
     std::cout << "Requesting peers..\n";
     tracker_msg_t buf;
-    MPI_Send(&buf, 1, data.tracker_msg, TRACKER_RANK, TRACKER_REQUEST_TAG, MPI_COMM_WORLD);
 
-    MPI_Recv(&buf, 1, data.tracker_msg, TRACKER_RANK, TRACKER_REQUEST_TAG, MPI_COMM_WORLD, NULL);
+    for (auto &file : data.wanted_files) {
+        std::cout << "Requesting peers for " << file << "\n";
+        strcpy(buf.msg, file.c_str());
+        buf.segment_index = 0; // Signal it's a file name
 
-    std::cout << "Received message " << buf.msg << "\n";
+        MPI_Send(&buf, 1, data.tracker_msg, TRACKER_RANK, TRACKER_REQUEST_TAG, MPI_COMM_WORLD);
+
+        do {
+            MPI_Recv(&buf, 1, data.tracker_msg, TRACKER_RANK, TRACKER_REQUEST_TAG, MPI_COMM_WORLD, NULL);
+            std::cout << buf.segment_index << " " << buf.msg << " with peers " << buf.peers << "\n";
+        } while (buf.segment_index != FILENAME_SEGMENT);
+    }
 }
 
 void *download_thread_func(void *arg)
@@ -128,11 +136,9 @@ void *download_thread_func(void *arg)
                 send_update(data);
             }
 
-            // Ask tracker for peers
+            // Ask tracker for peers and wait for response
             request_peers(data);
             segments_aquired = 1; // This has to be removed afterwards
-
-            // Wait for tracker's response
         }
 
         // Find wanted segments

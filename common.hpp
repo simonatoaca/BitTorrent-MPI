@@ -7,6 +7,8 @@
 #define MAX_CHUNKS 100
 #define MAX_MESSAGE (HASH_SIZE + 4 + MAX_FILENAME)
 
+#define FILENAME_SEGMENT (-1)
+
 #define REQUEST_TAG         200
 #define REPLY_TAG           201
 #define TRACKER_UPDATE_TAG  202
@@ -29,6 +31,6 @@ typedef struct {
 
 typedef struct {
     char msg[MAX_MESSAGE];
-    int segment_index; // This is 0 if the msg is the filename, +1 if it is a hash
+    int segment_index; // This is -1 if the msg is the filename, >0 if it is a hash
     long peers;        // For replies from the tracker regarding a file's swarm
 } tracker_msg_t;
