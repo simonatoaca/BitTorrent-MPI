@@ -46,14 +46,18 @@ void tracker(int numtasks, int rank, MPI_Datatype tracker_msg) {
         if (status.MPI_TAG == TRACKER_REQUEST_TAG) {
             std::cout << "Received a peer request\n";
             // Send data
-            
-            // THIS MIGHT BE WRONG BECAUSE OF THE FIXED SIZE ARRAY
             std::string wanted_file = std::string(buf.msg);
-            int segment_index = 0;
+            buf.segment_index = -1;
+
             for (auto &segment : swarm[wanted_file]) {
+                buf.segment_index++;
+                
+                if (segment.hash == "") { // The hash does not exist yet for this segment
+                    continue;
+                }
+
                 strcpy(buf.msg, segment.hash.c_str());
                 buf.peers = segment.peers;
-                buf.segment_index = segment_index++;
 
                 MPI_Send(&buf, 1, tracker_msg, status.MPI_SOURCE, TRACKER_REQUEST_TAG, MPI_COMM_WORLD);
             }

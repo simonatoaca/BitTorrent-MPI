@@ -77,25 +77,28 @@ void send_update(peer_data_t &data)
             strcpy(buf.msg, value.segments[i].c_str());
             buf.segment_index = i;
             MPI_Send(&buf, 1, data.tracker_msg, TRACKER_RANK, TRACKER_UPDATE_TAG, MPI_COMM_WORLD);
+
+            value.status[i].sent_update = true;
         }
     }
 }
 
 void request_peers(peer_data_t &data)
 {
-    std::cout << "Requesting peers..\n";
     tracker_msg_t buf;
 
     for (auto &file : data.wanted_files) {
         std::cout << "Requesting peers for " << file << "\n";
         strcpy(buf.msg, file.c_str());
-        buf.segment_index = 0; // Signal it's a file name
+        buf.segment_index = FILENAME_SEGMENT; // Signal it's a file name
 
         MPI_Send(&buf, 1, data.tracker_msg, TRACKER_RANK, TRACKER_REQUEST_TAG, MPI_COMM_WORLD);
 
         do {
             MPI_Recv(&buf, 1, data.tracker_msg, TRACKER_RANK, TRACKER_REQUEST_TAG, MPI_COMM_WORLD, NULL);
             std::cout << buf.segment_index << " " << buf.msg << " with peers " << buf.peers << "\n";
+
+            // Add to wanted segments if necessary
         } while (buf.segment_index != FILENAME_SEGMENT);
     }
 }
@@ -141,9 +144,7 @@ void *download_thread_func(void *arg)
             segments_aquired = 1; // This has to be removed afterwards
         }
 
-        // Find wanted segments
-
-        // Request segments
+        // Request segments from queue?
     }
 
     return NULL;
