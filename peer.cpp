@@ -5,6 +5,8 @@
 
 #include <iostream>
 #include <fstream>
+#include <random>
+#include <algorithm>
 
 #include "common.hpp"
 #include "peer.hpp"
@@ -40,7 +42,7 @@ void load_resources(peer_data_t &data)
             std::string segment;
             file >> segment;
 
-            data.file_segments[owned_file].segments.push_back(segment);
+            data.file_segments[owned_file].segments[j] = segment;
             data.file_segments[owned_file].status[j].aquired = true;
         }
     }
@@ -68,24 +70,33 @@ void send_update(peer_data_t &data)
         // Send filename
         MPI_Send(&buf, 1, data.tracker_msg, TRACKER_RANK, TRACKER_UPDATE_TAG, MPI_COMM_WORLD);
 
-        for (int i = 0; i < value.segment_number; i++) {
+        for (int i = 0; i < value.total_segment_number; i++) {
             // Don't send update regarding already sent segments
-            if (value.status[i].sent_update == true) {
+            if (value.status[i].aquired == false || value.status[i].sent_update == true) {
                 continue;
             }
 
             strcpy(buf.msg, value.segments[i].c_str());
             buf.segment_index = i;
             MPI_Send(&buf, 1, data.tracker_msg, TRACKER_RANK, TRACKER_UPDATE_TAG, MPI_COMM_WORLD);
+            std::cout << "Sent update with " << buf.segment_index << " " << buf.msg << "\n"; 
 
             value.status[i].sent_update = true;
         }
     }
 }
 
-void request_peers(peer_data_t &data)
+void request_peers(peer_data_t &data, std::vector<wanted_segment_t> &wanted_segments)
 {
     tracker_msg_t buf;
+
+    // Start clean, things have changed since last update
+    wanted_segments.clear();
+
+    /* Helper data structure - arrange segments based on their rarity
+        e.g. segments[1] -> segments which are owned by only one peer
+    */
+    std::vector<wanted_segment_t> segments[data.numtasks + 1];
 
     for (auto &file : data.wanted_files) {
         std::cout << "Requesting peers for " << file << "\n";
@@ -94,13 +105,108 @@ void request_peers(peer_data_t &data)
 
         MPI_Send(&buf, 1, data.tracker_msg, TRACKER_RANK, TRACKER_REQUEST_TAG, MPI_COMM_WORLD);
 
-        do {
+        while (true) {
             MPI_Recv(&buf, 1, data.tracker_msg, TRACKER_RANK, TRACKER_REQUEST_TAG, MPI_COMM_WORLD, NULL);
-            std::cout << buf.segment_index << " " << buf.msg << " with peers " << buf.peers << "\n";
 
-            // Add to wanted segments if necessary
-        } while (buf.segment_index != FILENAME_SEGMENT);
+            if (buf.segment_index == FILENAME_SEGMENT) {
+                std::cout << "End of " << buf.msg << "\n";
+                break;
+            }
+
+            std::cout << buf.segment_index << " " << buf.msg << " with peers ";
+            for (int i = 1; i <= data.numtasks; i++) {
+                if (GET_BIT(buf.peers, i)) {
+                    std::cout << i << " ";
+                }
+            }
+
+            std::cout << "\n";
+
+            // If the segment is already owned by the current peer, do nothing and continue
+            if (GET_BIT(buf.peers, data.rank)) {
+                continue;
+            }
+
+            // Update total segments for the file
+            data.file_segments[file].total_segment_number = std::max(data.file_segments[file].total_segment_number, buf.segment_index + 1);
+
+            // Add to segments
+            segments[__builtin_popcount(buf.peers)].push_back(
+                {.index = buf.segment_index, .peers = buf.peers, .hash = buf.msg, .file = file});
+        }
     }
+
+    // Compute wanted segments
+    for (int i = 1; i <= data.numtasks; i++) {
+        wanted_segments.insert(wanted_segments.end(), segments[i].begin(), segments[i].end());
+
+        if (wanted_segments.size() > 20) {
+            break;
+        }
+    }
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::shuffle(wanted_segments.begin(), wanted_segments.end(), gen);
+}
+
+bool add_segment(peer_data_t &data, wanted_segment_t &segment)
+{
+    std::cout << "Adding segment " << segment.index << " from " << segment.file << "\n";
+
+    std::string file = segment.file;
+    data.file_segments[file].segments[segment.index] = segment.hash;
+    data.file_segments[file].status[segment.index].aquired = true;
+    data.file_segments[file].segment_number++;
+
+    // The file is complete
+    if (data.file_segments[file].segment_number == data.file_segments[file].total_segment_number) {
+        return true;
+    }
+
+    return false;
+}
+
+void write_file(peer_data_t &data, std::string wanted_filename)
+{
+    std::cout << "WRITING FILE " << wanted_filename << " with " 
+              << data.file_segments[wanted_filename].total_segment_number << " segments\n";
+    char filename[FILENAME_MAX];
+    sprintf(filename, "client%d_%s", data.rank, wanted_filename.c_str());
+
+    std::ofstream file(filename);
+
+    if (!file.is_open()) {
+        std::cout << "Error creating file " << filename << " for writing\n";
+        return;
+    }
+
+    auto segments = data.file_segments[wanted_filename].segments;
+
+    for (int i = 0; i < data.file_segments[wanted_filename].total_segment_number - 1; i++) {
+        file << segments[i] << "\n";
+    }
+
+    file << segments[data.file_segments[wanted_filename].total_segment_number - 1];
+
+    file.close();
+}
+
+unsigned int pick_peer(long peers, int numtasks)
+{
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
+    std::uniform_int_distribution<int> genPeer(0, __builtin_popcount(peers) - 1);
+
+    std::vector<unsigned int> possible_peers;
+    for (int i = 1; i <= numtasks; i++) {
+        if (GET_BIT(peers, i)) {
+            possible_peers.push_back(i);
+        }
+    }
+
+    return possible_peers[genPeer(gen)];
 }
 
 void *download_thread_func(void *arg)
@@ -109,19 +215,8 @@ void *download_thread_func(void *arg)
 
     bool alive = true;
     tracker_msg_t buf;
-    MPI_Status status;
+    char hash[HASH_SIZE];
     int segments_aquired = 0;
-
-    // if (rank == 2) {
-    //     for (auto &[key, value] : data.file_segments) {
-    //         for (auto &segment : value.segments) {
-    //             MPI_Send(segment.c_str(), segment.length(), MPI_CHAR, 1, REQUEST_TAG, MPI_COMM_WORLD);
-
-    //             MPI_Recv(buf, HASH_SIZE, MPI_CHAR, 1, REPLY_TAG, MPI_COMM_WORLD, NULL);
-    //             printf("Received %s for segment %s from %s\n", buf, segment.c_str(), key.c_str());
-    //         }
-    //     }
-    // }
 
     // Send initial info to the tracker
     send_update(data);
@@ -132,6 +227,8 @@ void *download_thread_func(void *arg)
     // Wait for tracker's OK to start the process
     MPI_Bcast(&buf, 1, data.tracker_msg, TRACKER_RANK, MPI_COMM_WORLD);
 
+    std::vector<wanted_segment_t> wanted_segments; 
+
     while (alive) {
         if (segments_aquired % 10 == 0) {
             if (segments_aquired) {
@@ -140,11 +237,29 @@ void *download_thread_func(void *arg)
             }
 
             // Ask tracker for peers and wait for response
-            request_peers(data);
-            segments_aquired = 1; // This has to be removed afterwards
+            request_peers(data, wanted_segments);
         }
 
-        // Request segments from queue?
+        if (wanted_segments.empty()) {
+            break;
+        }
+
+        // Request segments
+        wanted_segment_t segment = wanted_segments.back();
+
+        unsigned int peer_dest = pick_peer(segment.peers, data.numtasks);
+        MPI_Send(segment.hash.c_str(), HASH_SIZE, MPI_CHAR, peer_dest, REQUEST_TAG, MPI_COMM_WORLD);
+
+        MPI_Recv(hash, HASH_SIZE, MPI_CHAR, peer_dest, REPLY_TAG, MPI_COMM_WORLD, NULL);
+        wanted_segments.pop_back();
+        segments_aquired++;
+
+        // Add segment
+        if (add_segment(data, segment)) {
+            write_file(data, segment.file);
+        
+            // Announce end of file download to the tracker
+        }
     }
 
     return NULL;
@@ -175,7 +290,7 @@ void peer(int numtasks, int rank, MPI_Datatype tracker_msg) {
     void *status;
     int r;
 
-    peer_data_t data = {.rank = rank, .tracker_msg = tracker_msg};
+    peer_data_t data = {.rank = rank, .numtasks = numtasks, .tracker_msg = tracker_msg};
     load_resources(data);
 
     r = pthread_create(&download_thread, NULL, download_thread_func, (void *) &data);
@@ -192,13 +307,13 @@ void peer(int numtasks, int rank, MPI_Datatype tracker_msg) {
 
     r = pthread_join(download_thread, &status);
     if (r) {
-        printf("Error on waiting the download thread\n");
+        printf("Error on waiting for the download thread\n");
         exit(-1);
     }
 
     r = pthread_join(upload_thread, &status);
     if (r) {
-        printf("Error on waiting the upload thread\n");
+        printf("Error on waiting for the upload thread\n");
         exit(-1);
     }
 }

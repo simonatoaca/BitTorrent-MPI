@@ -79,9 +79,9 @@ void tracker(int numtasks, int rank, MPI_Datatype tracker_msg) {
 
             segm->hash = std::string(buf.msg);
             SET_BIT(segm->peers, status.MPI_SOURCE);
-            std::cout << buf.segment_index << " ";
-            std::cout << swarm[connections[status.MPI_SOURCE]][buf.segment_index].hash << " and peers " << 
-                        swarm[connections[status.MPI_SOURCE]][buf.segment_index].peers << "\n";
+            // std::cout << buf.segment_index << " ";
+            // std::cout << swarm[connections[status.MPI_SOURCE]][buf.segment_index].hash << " and peers " << 
+            //             swarm[connections[status.MPI_SOURCE]][buf.segment_index].peers << "\n";
         }
     }
 }

@@ -1,7 +1,5 @@
 #pragma once
 
-#define SET_BIT(number, index) (number |= (1 << index))
-
 typedef struct {
     std::string hash;
     long peers;
