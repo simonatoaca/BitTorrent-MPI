@@ -14,6 +14,8 @@
 #define TRACKER_UPDATE_TAG  202
 #define TRACKER_REQUEST_TAG 203
 #define PEER_END_INIT       204
+#define PEER_BECOMES_SEED   205
+#define PEER_END_DOWNLOAD   206
 
 #define SET_BIT(number, index) (number |= (1 << index))
 #define GET_BIT(number, index) (number >> index & 1)

@@ -5,6 +5,8 @@
 
 #include <iostream>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "common.hpp"
 #include "tracker.hpp"
@@ -24,6 +26,9 @@ void tracker(int numtasks, int rank, MPI_Datatype tracker_msg) {
     MPI_Status status;
     tracker_msg_t buf;
     int total_peer_init = 0;
+    int total_peer_end = 0;
+    std::unordered_set<int> seeds;
+
 
     while (alive) {
         // Received message
@@ -42,9 +47,27 @@ void tracker(int numtasks, int rank, MPI_Datatype tracker_msg) {
             continue;
         }
 
+        if (status.MPI_TAG == PEER_BECOMES_SEED) {
+            seeds.insert(status.MPI_SOURCE);
+            continue;
+        }
+
+        if (status.MPI_TAG == PEER_END_DOWNLOAD) {
+            total_peer_end++;
+
+            if (total_peer_end == numtasks - 1) {
+                // Tell all seeds to end their upload threads
+                for (int seed : seeds) {
+                    MPI_Send("end", 4, MPI_CHAR, seed, REQUEST_TAG, MPI_COMM_WORLD);
+                }
+                return;
+            }
+
+            continue;
+        }
+
         // Peer request
         if (status.MPI_TAG == TRACKER_REQUEST_TAG) {
-            std::cout << "Received a peer request\n";
             // Send data
             std::string wanted_file = std::string(buf.msg);
             buf.segment_index = -1;
@@ -79,9 +102,6 @@ void tracker(int numtasks, int rank, MPI_Datatype tracker_msg) {
 
             segm->hash = std::string(buf.msg);
             SET_BIT(segm->peers, status.MPI_SOURCE);
-            // std::cout << buf.segment_index << " ";
-            // std::cout << swarm[connections[status.MPI_SOURCE]][buf.segment_index].hash << " and peers " << 
-            //             swarm[connections[status.MPI_SOURCE]][buf.segment_index].peers << "\n";
         }
     }
 }

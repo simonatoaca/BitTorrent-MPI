@@ -14,7 +14,7 @@
 void load_resources(peer_data_t &data)
 {
     char filename[FILENAME_MAX];
-    sprintf(filename, "../checker/tests/test1/in%d.txt", data.rank);
+    sprintf(filename, "../checker/tests/test4/in%d.txt", data.rank);
     int file_number = -1;
 
     std::ifstream file(filename);
@@ -61,8 +61,6 @@ void load_resources(peer_data_t &data)
 
 void send_update(peer_data_t &data)
 {
-    std::cout << "Sending update\n";
-
     for (auto &[key, value] : data.file_segments) {
         tracker_msg_t buf = {.segment_index = FILENAME_SEGMENT};
         strcpy(buf.msg, key.c_str());
@@ -79,7 +77,6 @@ void send_update(peer_data_t &data)
             strcpy(buf.msg, value.segments[i].c_str());
             buf.segment_index = i;
             MPI_Send(&buf, 1, data.tracker_msg, TRACKER_RANK, TRACKER_UPDATE_TAG, MPI_COMM_WORLD);
-            std::cout << "Sent update with " << buf.segment_index << " " << buf.msg << "\n"; 
 
             value.status[i].sent_update = true;
         }
@@ -99,9 +96,8 @@ void request_peers(peer_data_t &data, std::vector<wanted_segment_t> &wanted_segm
     std::vector<wanted_segment_t> segments[data.numtasks + 1];
 
     for (auto &file : data.wanted_files) {
-        std::cout << "Requesting peers for " << file << "\n";
         strcpy(buf.msg, file.c_str());
-        buf.segment_index = FILENAME_SEGMENT; // Signal it's a file name
+        buf.segment_index = FILENAME_SEGMENT;
 
         MPI_Send(&buf, 1, data.tracker_msg, TRACKER_RANK, TRACKER_REQUEST_TAG, MPI_COMM_WORLD);
 
@@ -109,18 +105,8 @@ void request_peers(peer_data_t &data, std::vector<wanted_segment_t> &wanted_segm
             MPI_Recv(&buf, 1, data.tracker_msg, TRACKER_RANK, TRACKER_REQUEST_TAG, MPI_COMM_WORLD, NULL);
 
             if (buf.segment_index == FILENAME_SEGMENT) {
-                std::cout << "End of " << buf.msg << "\n";
                 break;
             }
-
-            std::cout << buf.segment_index << " " << buf.msg << " with peers ";
-            for (int i = 1; i <= data.numtasks; i++) {
-                if (GET_BIT(buf.peers, i)) {
-                    std::cout << i << " ";
-                }
-            }
-
-            std::cout << "\n";
 
             // If the segment is already owned by the current peer, do nothing and continue
             if (GET_BIT(buf.peers, data.rank)) {
@@ -152,8 +138,6 @@ void request_peers(peer_data_t &data, std::vector<wanted_segment_t> &wanted_segm
 
 bool add_segment(peer_data_t &data, wanted_segment_t &segment)
 {
-    std::cout << "Adding segment " << segment.index << " from " << segment.file << "\n";
-
     std::string file = segment.file;
     data.file_segments[file].segments[segment.index] = segment.hash;
     data.file_segments[file].status[segment.index].aquired = true;
@@ -169,8 +153,6 @@ bool add_segment(peer_data_t &data, wanted_segment_t &segment)
 
 void write_file(peer_data_t &data, std::string wanted_filename)
 {
-    std::cout << "WRITING FILE " << wanted_filename << " with " 
-              << data.file_segments[wanted_filename].total_segment_number << " segments\n";
     char filename[FILENAME_MAX];
     sprintf(filename, "client%d_%s", data.rank, wanted_filename.c_str());
 
@@ -241,26 +223,41 @@ void *download_thread_func(void *arg)
         }
 
         if (wanted_segments.empty()) {
+            if (!segments_aquired) {
+                // The peer is a seed
+                MPI_Send(&buf, 1, data.tracker_msg, TRACKER_RANK, PEER_BECOMES_SEED, MPI_COMM_WORLD);
+            }
+
             break;
         }
 
-        // Request segments
+        // Request segment
         wanted_segment_t segment = wanted_segments.back();
 
         unsigned int peer_dest = pick_peer(segment.peers, data.numtasks);
         MPI_Send(segment.hash.c_str(), HASH_SIZE, MPI_CHAR, peer_dest, REQUEST_TAG, MPI_COMM_WORLD);
 
+        // Receive segment
         MPI_Recv(hash, HASH_SIZE, MPI_CHAR, peer_dest, REPLY_TAG, MPI_COMM_WORLD, NULL);
+
         wanted_segments.pop_back();
         segments_aquired++;
 
-        // Add segment
+        // Mark segment as received and write final file
+        // if all the segments have been gathered
         if (add_segment(data, segment)) {
-            write_file(data, segment.file);
-        
             // Announce end of file download to the tracker
+            strcpy(buf.msg, segment.file.c_str());
+            buf.segment_index = -1;
+            MPI_Send(&buf, 1, data.tracker_msg, TRACKER_RANK, PEER_BECOMES_SEED, MPI_COMM_WORLD);
+
+            // Write file
+            write_file(data, segment.file);
         }
     }
+
+    // Announce end of download to the tracker
+    MPI_Send(&buf, 1, data.tracker_msg, TRACKER_RANK, PEER_END_DOWNLOAD, MPI_COMM_WORLD);
 
     return NULL;
 }
@@ -276,6 +273,11 @@ void *upload_thread_func(void *arg)
     while (alive) {
         // Receive request
         MPI_Recv(buf, HASH_SIZE, MPI_CHAR, MPI_ANY_SOURCE, REQUEST_TAG, MPI_COMM_WORLD, &status);
+
+        // End upload signal
+        if (status.MPI_SOURCE == TRACKER_RANK && !strcmp(buf, "end")) {
+            return NULL;
+        }
 
         // Respond to request
         MPI_Send("ACK", 3, MPI_CHAR, status.MPI_SOURCE, REPLY_TAG, MPI_COMM_WORLD);
