@@ -11,10 +11,14 @@
 #include "common.hpp"
 #include "peer.hpp"
 
+/* Global random number generator */
+static std::random_device rd;
+static std::mt19937 gen(rd());
+
 void load_resources(peer_data_t &data)
 {
     char filename[FILENAME_MAX];
-    sprintf(filename, "../checker/tests/test4/in%d.txt", data.rank);
+    sprintf(filename, "in%d.txt", data.rank);
     int file_number = -1;
 
     std::ifstream file(filename);
@@ -39,10 +43,8 @@ void load_resources(peer_data_t &data)
         data.file_segments[owned_file].total_segment_number = segment_number;
 
         for (int j = 0; j < segment_number; j++) {
-            std::string segment;
-            file >> segment;
+            file >> data.file_segments[owned_file].segments[j];
 
-            data.file_segments[owned_file].segments[j] = segment;
             data.file_segments[owned_file].status[j].aquired = true;
         }
     }
@@ -91,8 +93,8 @@ void request_peers(peer_data_t &data, std::vector<wanted_segment_t> &wanted_segm
     wanted_segments.clear();
 
     /* Helper data structure - arrange segments based on their rarity
-        e.g. segments[1] -> segments which are owned by only one peer
-    */
+     *  e.g. segments[1] -> segments which are owned by only one peer
+     */
     std::vector<wanted_segment_t> segments[data.numtasks + 1];
 
     for (auto &file : data.wanted_files) {
@@ -114,7 +116,8 @@ void request_peers(peer_data_t &data, std::vector<wanted_segment_t> &wanted_segm
             }
 
             // Update total segments for the file
-            data.file_segments[file].total_segment_number = std::max(data.file_segments[file].total_segment_number, buf.segment_index + 1);
+            data.file_segments[file].total_segment_number = 
+                std::max(data.file_segments[file].total_segment_number, buf.segment_index + 1);
 
             // Add to segments
             segments[__builtin_popcount(buf.peers)].push_back(
@@ -122,17 +125,25 @@ void request_peers(peer_data_t &data, std::vector<wanted_segment_t> &wanted_segm
         }
     }
 
+    // Have at least this number of segments for the randomization
+    int rarest_segment_number = 0;
+
     // Compute wanted segments
     for (int i = 1; i <= data.numtasks; i++) {
         wanted_segments.insert(wanted_segments.end(), segments[i].begin(), segments[i].end());
+        
+        if (!rarest_segment_number) {
+            // segments[i].size() is the number of the rarest segments
+            rarest_segment_number = std::max(20, (int)segments[i].size());
+        }
 
-        if (wanted_segments.size() > 20) {
+        // To avoid having not rare segments in the vector
+        if (wanted_segments.size() >= rarest_segment_number) {
             break;
         }
     }
 
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    // Randomize segment order -> the first 10 will be different from peer to peer
     std::shuffle(wanted_segments.begin(), wanted_segments.end(), gen);
 }
 
@@ -176,9 +187,6 @@ void write_file(peer_data_t &data, std::string wanted_filename)
 
 unsigned int pick_peer(long peers, int numtasks)
 {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-
     std::uniform_int_distribution<int> genPeer(0, __builtin_popcount(peers) - 1);
 
     std::vector<unsigned int> possible_peers;
@@ -195,7 +203,6 @@ void *download_thread_func(void *arg)
 {
     peer_data_t data = *(peer_data_t*) arg;
 
-    bool alive = true;
     tracker_msg_t buf;
     char hash[HASH_SIZE];
     int segments_aquired = 0;
@@ -211,7 +218,7 @@ void *download_thread_func(void *arg)
 
     std::vector<wanted_segment_t> wanted_segments; 
 
-    while (alive) {
+    while (true) {
         if (segments_aquired % 10 == 0) {
             if (segments_aquired) {
                 // Update the tracker
@@ -266,11 +273,10 @@ void *upload_thread_func(void *arg)
 {
     peer_data_t data = *(peer_data_t*) arg;
 
-    bool alive = true;
     char buf[HASH_SIZE];
     MPI_Status status;
 
-    while (alive) {
+    while (true) {
         // Receive request
         MPI_Recv(buf, HASH_SIZE, MPI_CHAR, MPI_ANY_SOURCE, REQUEST_TAG, MPI_COMM_WORLD, &status);
 

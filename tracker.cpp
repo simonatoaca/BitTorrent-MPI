@@ -22,15 +22,13 @@ void tracker(int numtasks, int rank, MPI_Datatype tracker_msg) {
     */
     std::unordered_map<int, std::string> connections;
 
-    bool alive = true;
     MPI_Status status;
     tracker_msg_t buf;
     int total_peer_init = 0;
     int total_peer_end = 0;
     std::unordered_set<int> seeds;
 
-
-    while (alive) {
+    while (true) {
         // Received message
         MPI_Recv(&buf, 1, tracker_msg, MPI_ANY_SOURCE,
                  MPI_ANY_TAG, MPI_COMM_WORLD, &status);
@@ -60,6 +58,7 @@ void tracker(int numtasks, int rank, MPI_Datatype tracker_msg) {
                 for (int seed : seeds) {
                     MPI_Send("end", 4, MPI_CHAR, seed, REQUEST_TAG, MPI_COMM_WORLD);
                 }
+
                 return;
             }
 
@@ -74,8 +73,9 @@ void tracker(int numtasks, int rank, MPI_Datatype tracker_msg) {
 
             for (auto &segment : swarm[wanted_file]) {
                 buf.segment_index++;
-                
-                if (segment.hash == "") { // The hash does not exist yet for this segment
+
+                // The hash does not exist yet for this segment
+                if (segment.hash == "") { 
                     continue;
                 }
 
@@ -100,7 +100,7 @@ void tracker(int numtasks, int rank, MPI_Datatype tracker_msg) {
         } else {
             segment_t *segm = &swarm[connections[status.MPI_SOURCE]][buf.segment_index];
 
-            segm->hash = std::string(buf.msg);
+            segm->hash = buf.msg;
             SET_BIT(segm->peers, status.MPI_SOURCE);
         }
     }
