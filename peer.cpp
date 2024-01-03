@@ -126,7 +126,7 @@ void request_peers(peer_data_t &data, std::vector<wanted_segment_t> &wanted_segm
     }
 
     // Have at least this number of segments for the randomization
-    int rarest_segment_number = 0;
+    size_t rarest_segment_number = 0;
 
     // Compute wanted segments
     for (int i = 1; i <= data.numtasks; i++) {
@@ -260,6 +260,14 @@ void *download_thread_func(void *arg)
 
             // Write file
             write_file(data, segment.file);
+
+            // Remove file from list
+            for (auto it = data.wanted_files.begin(); it != data.wanted_files.end(); it++) {
+                if (*it == segment.file) {
+                    data.wanted_files.erase(it);
+                    break;
+                }
+            }
         }
     }
 
